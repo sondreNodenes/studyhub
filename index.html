@@ -394,6 +394,18 @@ body.sb-open{overflow:hidden}
 .trybox .card{background:var(--surface)}
 .try-h{font-weight:700;font-size:.92rem}
 .try-more>summary{cursor:pointer;font-size:.85rem;color:var(--muted);margin:2px 0 8px}
+.ep-row{display:grid;grid-template-columns:28px 1fr auto;gap:6px 12px;align-items:center;padding:12px 2px;border-top:1px solid var(--border)}
+.ep-row:first-child{border-top:0}
+.ep-n{width:26px;height:26px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-weight:700;display:flex;align-items:center;justify-content:center;font-size:.8rem}
+.ep-main b{display:block;line-height:1.3}
+.ep-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
+.ep-bar{height:8px;border-radius:5px;background:var(--border);overflow:hidden;display:flex;margin-top:8px;max-width:340px}
+.ep-bar i{display:block;height:100%}
+.ep-bar .st{background:var(--good)}.ep-bar .sh{background:color-mix(in srgb,var(--good) 38%,transparent)}
+.pill.doc{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+.pill.est{border-style:dashed}
+.pill.warnp{color:var(--warn);border-color:var(--warn)}.pill.badp{color:var(--bad);border-color:var(--bad)}
+@media (max-width:600px){.ep-row{grid-template-columns:28px 1fr}.ep-row .ep-act{grid-column:2}}
 .rv-list{display:flex;flex-direction:column;margin-top:10px}
 .rv-row{display:flex;align-items:center;gap:10px;padding:9px 6px;border-top:1px solid var(--border);color:var(--text)}
 .rv-row:hover{background:var(--surface2);text-decoration:none}
@@ -1172,7 +1184,7 @@ function buildList(items) {
 /* ---------- parsers ---------- */
 function parseCourseMeta(raw, dir) {
   const c = { id: dir, name: dir, emoji: '', color: '#2f6fed', tagline: '', exam: '' };
-  const allowed = ['id', 'emoji', 'color', 'tagline'];
+  const allowed = ['id', 'emoji', 'color', 'tagline', 'examq', 'exams', 'blueprint'];
   let sec = 'head', buf = [], gotName = false;
   String(raw).replace(/\r/g, '').split('\n').forEach(l => {
     if (!gotName && /^# /.test(l)) { c.name = l.slice(2).trim(); gotName = true; return; }
@@ -1181,6 +1193,7 @@ function parseCourseMeta(raw, dir) {
     else buf.push(l);
   });
   c.exam = buf.join('\n').trim();
+  c.examq = +c.examq || 0; c.exams = +c.exams || 0;
   return c;
 }
 function parseLecture(raw) {
@@ -1234,6 +1247,9 @@ function parseLecture(raw) {
       const kv = /^code:\s*(.*)$/.exec(line); if (kv) { lec.code = kv[1].trim(); continue; }
       const pv = /^pdf:\s*(.*)$/.exec(line); if (pv) { lec.pdfs = pv[1].split('|').map(x => x.trim()).filter(Boolean); continue; }
       const cv = /^covers:\s*(.*)$/.exec(line); if (cv) { lec.covers = cv[1].split(/[,\s]+/).filter(Boolean); continue; }
+      // exam-plan header (optional): weight = past exam questions on this topic, tier 1-3, needs = prerequisite codes, minutes = time to learn
+      const pm = /^(weight|tier|needs|minutes|basis):\s*(.*)$/.exec(line);
+      if (pm) { lec.plan = lec.plan || {}; const v = pm[2].trim(); lec.plan[pm[1]] = pm[1] === 'needs' ? v.split(/[,\s]+/).filter(Boolean) : pm[1] === 'basis' ? v : (+v || 0); continue; }
     }
     const h = /^##\s+(.+)$/.exec(line);
     if (h) {
@@ -1423,7 +1439,7 @@ function buildCourses() {
 }
 function makeLecture(course, raw, slug, user) {
   const p = parseLecture(raw);
-  const L = { course, slug, user, raw, title: p.title || slug, code: p.code || '', covers: p.covers || [], pdfs: p.pdfs, highlights: p.highlights, explained: p.explained, examples: p.examples, summary: p.summary, cards: p.cards, questions: p.questions, warnings: p.warnings };
+  const L = { course, slug, user, raw, plan: p.plan || null, title: p.title || slug, code: p.code || '', covers: p.covers || [], pdfs: p.pdfs, highlights: p.highlights, explained: p.explained, examples: p.examples, summary: p.summary, cards: p.cards, questions: p.questions, warnings: p.warnings };
   L.id = course.id + '/' + slug;
   L.cards.forEach(c => { c.id = L.id + '#' + hashStr(c.q); c.lec = L; c.oldIds = (c.was || []).map(t => L.id + '#' + hashStr(t)); });
   L.questions.forEach(q => { q.id = L.id + '?' + hashStr(q.text); q.lec = L; q.oldIds = (q.was || []).map(t => L.id + '?' + hashStr(t)); const f = (U.fixes || {})[q.id]; if (f && !f.reset) applyFix(q, f); });
@@ -1806,6 +1822,77 @@ window.addEventListener('hashchange', render);
 /* ===================================================================
    Views
    =================================================================== */
+/* ===== Exam plan: what to learn first =====
+   Ranking uses (1) documented exam history: how many past exam questions were on the topic, (2) how much of the topic you have NOT
+   mastered, (3) how many other topics build on it, (4) the time it takes to learn. Topics with no exam history get a small
+   ESTIMATED share from their tier (my judgement), and are labelled as such. Mastery counts what you answered:
+   "solid" = correct twice in a row (or a card at 3+ bars) and not overdue; "recent" = last answer correct, not yet confirmed. */
+const planLecs = C => C.lectures.filter(L => L.plan && isLectureItem(L));
+const hasExamPlan = C => planLecs(C).length > 0;
+function lecMastery(L, now = Date.now()) {
+  let stable = 0, short = 0, n = 0, tried = 0;
+  L.questions.forEach(q => { n++; const x = qstat(q.id); if (x.last == null) return; tried++;
+    if (x.last === 1 && (x.streak || 0) >= 2) stable += (x.due || 0) > now ? 1 : 0.6; else if (x.last === 1) short += 0.35; });
+  L.cards.forEach(c => { n++; const x = cs(c.id); if (!x.n) return; tried++;
+    if (x.b >= 3 && x.last === 1) stable += x.due > now ? 1 : 0.6; else if (x.last === 1) short += 0.35; });
+  return { stable: n ? stable / n : 0, short: n ? short / n : 0, m: n ? (stable + short) / n : 0, tried, n, missed: L.questions.filter(q => qstat(q.id).last === 0).length };
+}
+function examPlan(C, now = Date.now()) {
+  const rows = planLecs(C).map(L => ({ L, p: L.plan, ms: lecMastery(L, now) }));
+  const byCode = new Map(rows.map(r => [(r.L.code || '').toLowerCase(), r]));
+  const total = C.examq || rows.reduce((n, r) => n + (r.p.weight || 0), 0) || 1;
+  rows.forEach(r => {
+    const code = (r.L.code || '').toLowerCase();
+    r.total = total;
+    r.share = r.p.weight > 0 ? r.p.weight / total : ({ 2: 0.03, 3: 0.01 }[r.p.tier] || 0.01);
+    r.dependents = rows.filter(x => (x.p.needs || []).some(c => c.toLowerCase() === code)).length;
+    r.minutes = r.p.minutes || 30;
+    r.unmet = (r.p.needs || []).map(c => byCode.get(c.toLowerCase())).filter(x => x && x.ms.m < 0.35);
+    r.score = r.share * (1 + 0.25 * r.dependents) * (1 - r.ms.m) / (r.minutes / 30) * (r.unmet.length ? 0.5 : 1);
+    r.must = r.p.weight / total >= 0.12;
+    r.status = r.ms.tried === 0 ? 'new' : r.ms.m >= 0.75 ? 'solid' : 'building';
+  });
+  return rows.sort((a, b) => b.score - a.score || a.L.index - b.L.index);
+}
+/* share of documented exam questions you have solid mastery of: an evidence-based readiness figure, not a grade prediction */
+function examCoverage(rows) {
+  const doc = rows.filter(r => r.p.weight > 0), tot = doc.reduce((n, r) => n + r.p.weight, 0);
+  return tot ? Math.round(100 * doc.reduce((n, r) => n + r.p.weight * Math.min(1, r.ms.stable / 0.75), 0) / tot) : null;
+}
+const stripTier = t => String(t).replace(/\s*\[[^\]]*\]\s*$/, '').replace(/^Lecture \d+\s*-\s*/, '');
+function examPlanRow(r, i, C) {
+  const L = r.L, p = r.p, ms = r.ms, pct = x => Math.round(100 * x);
+  const evid = p.weight > 0 ? `<span class="pill doc" title="Counted from the ${C.exams || 'past'} past exams">Documented · ${p.weight} of ${r.total} exam questions</span>` : `<span class="pill est" title="Not asked in the past exams. The tier is a judgement, not exam history.">Estimated · tier ${p.tier || 3} · not in past exams</span>`;
+  const flags = (r.unmet.length ? `<span class="pill warnp">learn ${r.unmet.map(u => esc(u.L.code)).join(', ')} first</span>` : '') + (r.must && ms.m < 0.75 ? '<span class="pill badp">must be solid</span>' : '') + (ms.missed ? `<span class="pill badp">${ms.missed} missed</span>` : '');
+  const act = ms.tried === 0 ? `<a class="btn sm primary" href="#/c/${esc(C.id)}/${esc(L.slug)}">Start</a>` : `<button class="btn sm ${r.status === 'solid' ? '' : 'primary'}" data-action="quiz-lec" data-id="${esc(L.id)}">${r.status === 'solid' ? 'Check' : 'Quiz'}</button>`;
+  return `<div class="ep-row"><div class="ep-n">${i + 1}</div><div class="ep-main"><b>${esc(L.code)} · ${esc(stripTier(L.title))}</b><div class="ep-meta">${evid}<span class="pill">~${r.minutes} min to learn</span>${flags}</div>
+    <div class="ep-bar" role="img" aria-label="Mastery ${pct(ms.m)} percent"><i class="st" style="width:${pct(ms.stable)}%"></i><i class="sh" style="width:${pct(ms.short)}%"></i></div>
+    <div class="small muted">${ms.tried ? `Solid ${pct(ms.stable)}% · recent ${pct(ms.short)}% · ${ms.tried} of ${ms.n} items tried` : 'Not started'}</div></div><div class="ep-act">${act}</div></div>`;
+}
+function examPlanCard(C, limit = 4, compact = false) {
+  const rows = examPlan(C), cov = examCoverage(rows), docN = rows.filter(r => r.p.weight > 0).length;
+  const hasPaper = !!parseBlueprint(C).length;
+  const todo = rows.filter(r => r.status !== 'solid'), solid = rows.filter(r => r.status === 'solid');
+  const shown = todo.slice(0, limit), rest = todo.slice(limit);
+  return `<div class="card ep-card" style="margin-bottom:22px"><div class="row"><h3 style="margin:0">Exam plan: what to do next</h3><span class="spacer"></span>${compact ? `<a class="small" href="#/c/${esc(C.id)}">Full plan</a>` : ''}</div>
+    <details class="small muted" style="margin:6px 0 4px"><summary style="cursor:pointer">How this is ranked</summary><p style="margin:6px 0">By how often the topic appeared in the ${C.exams || ''} past exams, how much of it you have not yet mastered, how many topics build on it, and the time it takes to learn. <b>Documented</b> = counted from past exams; <b>Estimated</b> = my judgement. Mastery counts only what you answered: <b>solid</b> = correct twice in a row and not overdue, <b>recent</b> = last answer correct but not yet confirmed.</p></details>
+    <div class="small" style="margin:4px 0 8px"><b>${cov === null ? '—' : cov + '%'}</b> of the documented exam questions are covered by topics you have mastered <span class="muted">(evidence of what you have practised, not a grade prediction) · ${solid.length} of ${rows.length} topics solid</span></div>
+    ${shown.map((r, i) => examPlanRow(r, i, C)).join('') || '<p class="muted">Every topic is solid. Keep it fresh with Smart review, and sit an exam paper.</p>'}
+    ${!compact && rest.length ? `<details style="margin-top:6px"><summary class="small" style="cursor:pointer">All other topics (${rest.length})</summary>${rest.map((r, i) => examPlanRow(r, shown.length + i, C)).join('')}</details>` : ''}
+    ${!compact && solid.length ? `<details style="margin-top:6px"><summary class="small" style="cursor:pointer">Solid topics: keep them fresh (${solid.length})</summary>${solid.map((r, i) => examPlanRow(r, i, C)).join('')}</details>` : ''}
+    ${!compact && hasPaper ? `<div class="row" style="margin-top:12px"><button class="btn" data-action="start-paper" data-id="${esc(C.id)}" data-n="4">Half exam paper (4 questions, 90 min)</button><button class="btn" data-action="start-paper" data-id="${esc(C.id)}" data-n="7">Full exam paper (7 questions)</button></div>` : ''}
+    </div>`;
+}
+/* a mixed round over a whole course: lectures weighted by the exam plan (or equally), and inside each lecture the unseen, missed and due questions first */
+const rankQ = q => { const x = qstat(q.id); return x.last == null || x.last === 0 ? 0 : (x.due || 0) <= Date.now() ? 1 : 2; };
+function courseMix(C, n) {
+  const rows = hasExamPlan(C) ? examPlan(C).map(r => ({ L: r.L, w: r.score + 0.01 })) : C.lectures.filter(L => isLectureItem(L) && L.questions.length).map(L => ({ L, w: 1 }));
+  if (!rows.length) return shuffle(C.lectures.flatMap(l => l.questions)).slice(0, n);
+  const tot = rows.reduce((a, r) => a + r.w, 0); let left = n;
+  rows.forEach(r => { r.k = Math.floor(n * r.w / tot); r.f = n * r.w / tot - r.k; left -= r.k; });
+  rows.slice().sort((a, b) => b.f - a.f).slice(0, left).forEach(r => r.k++);
+  return shuffle(rows.flatMap(r => shuffle(r.L.questions).sort((a, b) => rankQ(a) - rankQ(b)).slice(0, r.k)));
+}
 function studyPriorities() {
   return COURSES.flatMap(C => reviewList(C)).sort((a, b) => b.score - a.score || a.L.id.localeCompare(b.L.id));
 }
@@ -1814,9 +1901,11 @@ function studyPriorities() {
 function buildStudyPlan(minutes, now = Date.now(), priorities = studyPriorities()) {
   minutes = [10, 20, 40].includes(+minutes) ? +minutes : 20;
   const lecs = allLectures(), cards = lecs.flatMap(L => L.cards), qs = lecs.flatMap(L => L.questions);
-  const focus = priorities[0] || null;
+  // a course with an exam plan decides which topic new material comes from (documented exam weight x what you have not mastered)
+  const pc = COURSES.find(hasExamPlan), epAll = pc ? examPlan(pc, now) : [], epTop = epAll.find(r => r.score > 0 && r.status !== 'solid') || null;
+  const focus = priorities[0] && (!epTop || priorities[0].L.course.id === epTop.L.course.id) ? priorities[0] : null;
   const first = lecs.find(L => isLectureItem(L) && L.questions.some(q => qstat(q.id).last == null)) || lecs.find(isLectureItem);
-  const focusL = focus ? focus.L : first;
+  const focusL = epTop ? (focus && epAll.findIndex(r => r.L === focus.L) <= 2 && epAll.findIndex(r => r.L === focus.L) >= 0 ? focus.L : epTop.L) : focus ? focus.L : first;
   const scale = minutes / 10, steps = [];
   const due = cards.filter(c => cs(c.id).n > 0 && cs(c.id).due <= now).sort((a, b) => cs(a.id).due - cs(b.id).due);
   const fresh = cards.filter(c => !cs(c.id).n && (!focusL || c.lec.id === focusL.id));
@@ -1826,7 +1915,7 @@ function buildStudyPlan(minutes, now = Date.now(), priorities = studyPriorities(
   if (selectedCards.length) {
     const nd = selectedCards.filter(c => cs(c.id).n > 0).length, nf = selectedCards.length - nd;
     steps.push({ kind: 'cards', ids: selectedCards.map(c => c.id), label: `${pluralize(selectedCards.length, 'flashcard')}`,
-      why: [nd ? `${nd} due for review, oldest first` : '', nf ? `${nf} new from ${focusL ? focusL.title : 'your courses'}` : ''].filter(Boolean).join(' · ') });
+      why: [nd ? `${nd} due for review, oldest first` : '', nf ? `${nf} new from ${focusL ? stripTier(focusL.title) : 'your courses'}${epTop && focusL === epTop.L ? ` (top of your exam plan: ${epTop.p.weight > 0 ? epTop.p.weight + ' of ' + epTop.total + ' past exam questions' : 'estimated'})` : ''}` : ''].filter(Boolean).join(' · ') });
   }
   let section = focus;
   if (!section && focusL && focusL.questions.some(q => qstat(q.id).last == null)) {
@@ -1922,6 +2011,7 @@ function viewHome() {
   main.innerHTML = `
     <div class="hero"><div><h1>Study dashboard</h1><div class="muted">Choose your next session, then see how your learning is progressing.</div></div></div>
     ${nextSessionPanel()}
+    ${COURSES.filter(hasExamPlan).map(C => examPlanCard(C, 3, true)).join('')}
     <h2>Your progress</h2>${progressBlock(lecs)}
     ${priorities.length ? `<div class="card" style="margin-bottom:22px"><h3 style="margin:0">Priority topics</h3><p class="small muted" style="margin:4px 0">Based on missed answers, difficult flashcards and sections due to explain. Topic matches are suggestions.</p><div class="rv-list">${priorities.slice(0, 3).map(it => reviewRow(it.L.course, it)).join('')}</div></div>` : ''}
     ${(() => { const l = P.last && getCourse(P.last.c) && getCourse(P.last.c).lectures.find(x => x.slug === P.last.l); return l ? `<div class="card" style="margin-bottom:16px"><div class="row"><div><div class="small muted">Continue where you left off</div><b>${esc(l.title)}</b></div><span class="spacer"></span><a class="btn" href="#/c/${esc(P.last.c)}/${esc(l.slug)}/${esc(P.last.t)}">Continue →</a></div></div>` : ''; })()}
@@ -2039,6 +2129,7 @@ function viewCourse(r) {
       ${batchPick()}
     </div>
     ${progressBlock(lecs)}
+    ${hasExamPlan(C) ? examPlanCard(C, 4) : ''}
     ${courseTaskPanel(C)}
     ${reviewBlock(C)}
     <div class="card gcourse" style="--c:${esc(C.color)};margin-bottom:22px"><div class="row"><h3 style="margin:0">Your grade</h3><span class="spacer"></span><a class="small" href="#/grades">All courses</a></div>${gradesBlock(C.id)}</div>
@@ -2880,9 +2971,41 @@ function viewWeak() {
     ${COURSES.map(c => { const n = weakCards(c.lectures).length + weakQs(c.lectures).length; return n ? `<div class="card" style="margin-top:14px"><b>${esc(c.name)}</b> <span class="pill">${n}</span><ul class="small">${c.lectures.map(L => { const k = weakCards([L]).length + weakQs([L]).length; return k ? `<li><a href="#/c/${esc(c.id)}/${esc(L.slug)}">${esc(L.title)}</a> - ${k}</li>` : ''; }).join('')}</ul></div>` : ''; }).join('')}`;
 }
 
+const parseBlueprint = C => String((C && C.blueprint) || '').split(';').map(x => x.trim()).filter(Boolean).map(x => { const [label, codes] = x.split('='); return { label: label.trim(), codes: (codes || '').split('+').map(c => c.trim().toLowerCase()).filter(Boolean) }; });
+const qModules = q => { const m = /Modules?\s+(L\d+(?:\s*(?:,|and|\+)\s*L\d+)*)/i.exec(q.expl || ''); return m ? (m[1].match(/L\d+/gi) || []).map(x => x.toLowerCase()) : [(q.lec.code || '').toLowerCase()]; };
+const examGroupKey = q => { const m = /^Exam [A-Za-z]+ \d{4},? Q(\d+)/.exec(q.text); return m ? q.lec.id + '|' + m[1] : null; };
+/* An exam paper: one multi-part question per documented exam theme (the course's "blueprint"), taken from past exams, those you
+   have not answered or answered worst first. A theme with no past-exam question falls back to questions from its modules. */
+function buildPaper(C, nq) {
+  const bp = parseBlueprint(C).slice(0, nq), exQs = C.lectures.filter(L => /^EX\d/i.test(L.code || '')).flatMap(L => L.questions);
+  const groups = new Map(); exQs.forEach(q => { const k = examGroupKey(q); if (!k) return; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(q); });
+  const used = new Set(), questions = [], meta = {};
+  bp.forEach((th, i) => {
+    const cands = [...groups.entries()].filter(([k, qs]) => !used.has(k) && qs.some(q => qModules(q).some(c => th.codes.includes(c))));
+    const rank = qs => qs.reduce((a, q) => { const x = qstat(q.id); return a + (x.last == null ? 0 : x.last === 1 ? 2 : 1); }, 0) / qs.length + Math.random();
+    let parts;
+    if (cands.length) { cands.sort((a, b) => rank(a[1]) - rank(b[1])); used.add(cands[0][0]); parts = cands[0][1]; }
+    else parts = shuffle(C.lectures.filter(L => th.codes.includes((L.code || '').toLowerCase())).flatMap(L => L.questions).filter(q => ['calc', 'gen', 'short'].includes(q.type))).slice(0, 3);
+    parts.forEach(q => { questions.push(q); meta[q.id] = { theme: th.label, no: i + 1 }; });
+  });
+  return { questions, meta, themes: bp.length };
+}
+function startPaper(cid, n) {
+  const C = getCourse(cid); if (!C) return;
+  const { questions, meta, themes } = buildPaper(C, n);
+  if (!questions.length) { toast('No past-exam questions available for a paper'); return; }
+  startQuiz(questions, 'Exam paper · ' + C.name, '#/exam', { mode: 'exam', minutes: themes >= 7 ? 180 : 90, meta, paper: true });
+}
+function paperCard() {
+  return COURSES.filter(C => parseBlueprint(C).length).map(C => `<div class="card" style="max-width:640px;margin-bottom:16px"><h3 style="margin-top:0">Exam paper: ${esc(C.name)}</h3>
+    <p class="small muted">One multi-part question for each theme that past exams asked (${parseBlueprint(C).map(t => esc(t.label)).join(', ')}), taken from the real past exams: ones you have not tried or got wrong come first. Timed, no feedback until you submit, written answers self-graded. The score is a practice result, not a grade prediction.</p>
+    <div class="row"><button class="btn primary" data-action="start-paper" data-id="${esc(C.id)}" data-n="7">Full paper · 7 questions · 3 h</button><button class="btn" data-action="start-paper" data-id="${esc(C.id)}" data-n="4">Half paper · 4 questions · 90 min</button></div></div>`).join('');
+}
 function viewExamSetup(r) {
   const [pre, scope0] = (r.arg || '').split('~');
   main.innerHTML = `<div class="crumbs"><a href="#/">Dashboard</a> › Exam simulation</div><h1>Exam simulation</h1>
+    ${paperCard()}
+    <h3>Custom question set</h3>
     <p class="muted">Practise under time pressure with sources and question types suited to your course. No hints or feedback until you submit. Short-answer and code questions are self-graded against the model answer at the end.</p>
     <div class="card" style="max-width:640px">
       <div class="field"><label for="ex-course">Course</label><select id="ex-course"><option value="all">All courses</option>${COURSES.map(c => `<option value="${esc(c.id)}" ${c.id === pre ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
@@ -3202,10 +3325,13 @@ function renderCards() {
 /* ===================================================================
    Sessions: quiz / exam
    =================================================================== */
+const mkItem = q0 => { const q = q0.type === 'gen' ? instantiate(q0) : q0; return { q, opts: (q.type === 'mcq' || q.type === 'multi') ? shuffle(q.options) : null, resp: null, ok: null, revealed: false }; };
 function startQuiz(questions, title, back, opts = {}) {
   if (!questions.length) { toast('No questions available'); return; }
-  const items = questions.map(q0 => { const q = q0.type === 'gen' ? instantiate(q0) : q0; return { q, opts: (q.type === 'mcq' || q.type === 'multi') ? shuffle(q.options) : null, resp: null, ok: null, revealed: false }; });
+  const items = questions.map(mkItem);
   session = Object.assign({ kind: 'quiz', title, back, items, i: 0, mode: 'practice', done: false, deadline: null, selfGraded: false }, opts);
+  if (session.meta) session.items.forEach(it => { const m = session.meta[it.q.id]; if (m) { it.theme = m.theme; it.no = m.no; } });
+  if (session.meta) { const cnt = {}; session.items.forEach(it => { if (it.theme) { cnt[it.no] = (cnt[it.no] || 0) + 1; it.part = cnt[it.no]; } }); session.items.forEach(it => { if (it.theme) it.parts = cnt[it.no]; }); }
   if (session.minutes) session.deadline = Date.now() + session.minutes * 60000;
   location.hash = '#/play'; render();
 }
@@ -3246,7 +3372,25 @@ function qBody(it, idx, locked, showFb) {
   }
   return h;
 }
-function feedbackBlock(it) {
+function similarRow(it) {
+  if (!session || session.mode !== 'practice' || it.ok !== false || it.simDone) return '';
+  return '<div class="row" style="margin-top:10px"><button class="btn sm primary" data-action="similar">↻ Test this idea again: a related question comes next</button></div>';
+}
+/* a related question on the same idea: a fresh random variant of a generated question, otherwise another question from the same notes section */
+function similarQuestion(q, s) {
+  const taken = new Set(s.items.map(x => x.q.id)), L0 = q.lec;
+  if (q.gen) { const base = L0.questions.find(x => x.id === q.id && x.type === 'gen'); if (base) return base; }
+  const lecs = isLectureItem(L0) ? [L0] : coveredLecs(L0), txt = q.text + ' ' + (q.options || []).filter(o => o.correct).map(o => o.text).join(' ');
+  let best = null;
+  lecs.forEach(L => { const m = xMatch(L, txt, q.expl || '', 0.3, 1.05); if (m && (!best || m.v > best.m.v)) best = { L, m }; });
+  if (!best) return null;
+  const rank = x => (x.type === 'gen' ? 0 : x.type === 'short' ? 3 : 1) + (qstat(x.id).last == null ? 0 : qstat(x.id).last === 0 ? 0.4 : 1.2) + Math.random() * 0.5;
+  const same = best.L.questions.filter(x => x.id !== q.id && !taken.has(x.id) && (xMatch(best.L, x.text + ' ' + (x.options || []).filter(o => o.correct).map(o => o.text).join(' '), x.expl || '', 0.3, 1.05) || { sec: {} }).sec.key === best.m.sec.key);
+  const pool = same.length ? same : best.L.questions.filter(x => x.id !== q.id && !taken.has(x.id) && x.type !== 'short');
+  return pool.sort((a, b) => rank(a) - rank(b))[0] || null;
+}
+function feedbackBlock(it) { return feedbackBlock0(it).replace(/<\/div>$/, similarRow(it) + '</div>'); }
+function feedbackBlock0(it) {
   const q = it.q;
   const review = q.lec && (it.ok === false || it.mismatch) ? asReview(q.lec, q) : '';
   const reviewLink = review ? `<div style="margin-top:10px">${review}</div>` : '';
@@ -3293,7 +3437,7 @@ function renderQuiz() {
       ${left !== null ? `<span class="timer ${left < 60000 ? 'low' : ''}" id="timer">${fmtTime(left)}</span>` : ''}</div>
     ${exam ? `<div class="q-grid">${s.items.map((x, k) => `<button class="${k === s.i ? 'cur' : ''} ${x.resp !== null && x.resp !== undefined && x.resp !== '' ? 'done' : ''}" data-action="goto" data-k="${k}" aria-label="Question ${k + 1}">${k + 1}</button>`).join('')}</div>` : ''}
     <div class="card">
-      <div class="small muted" style="margin-bottom:6px">${esc(C.name)} · ${esc(it.q.lec.title)}</div>
+      <div class="small muted" style="margin-bottom:6px">${it.theme ? `<span class="pill doc">Question ${it.no}${it.parts > 1 ? ' (' + 'abcdefgh'[it.part - 1] + ')' : ''} · ${esc(it.theme)}</span> ` : ''}${esc(C.name)} · ${esc(it.q.lec.title)}</div>
       ${qBody(it, s.i, locked, showFb)}
       ${showFb ? feedbackBlock(it) : ''}
       ${!exam && (it.q.type === 'short' || it.q.type === 'code') && !it.revealed ? '<div class="row" style="margin-top:12px"><button class="btn primary" data-action="reveal">Show model answer</button></div>' : ''}
@@ -3345,11 +3489,13 @@ function scoreOf(s) {
 function renderResults() {
   const s = session, sc = scoreOf(s), p = Math.round(100 * sc.ok / sc.total);
   const bylec = {};
-  s.items.forEach(it => { const k = it.q.lec.title; (bylec[k] = bylec[k] || { ok: 0, n: 0 }); bylec[k].n++; if (it.ok === true) bylec[k].ok++; });
+  s.items.forEach(it => { const k = it.theme ? 'Q' + it.no + ' ' + it.theme : it.q.lec.title; (bylec[k] = bylec[k] || { ok: 0, n: 0 }); bylec[k].n++; if (it.ok === true) bylec[k].ok++; });
+  const paperScore = s.paper ? Math.round(100 * Object.values(bylec).reduce((a, v) => a + v.ok / v.n, 0) / Object.keys(bylec).length) : null;
   const missed = s.items.filter(it => it.ok !== true);
   main.innerHTML = `<div class="q-card"><div class="crumbs"><a href="${esc(s.back)}" data-action="leave-session">← ${esc(s.title)}</a></div>
     <div class="card"><div class="row" style="gap:24px;align-items:center"><div class="score-ring" style="--p:${p}"><div>${p}%</div></div>
       <div style="flex:1;min-width:220px"><h2 style="margin:0">${sc.ok} / ${sc.total} correct</h2><div class="muted">${p >= 85 ? 'Strong result on this round. Return later to check what you retain.' : p >= 65 ? 'Solid. Review the misses below.' : 'Keep going - revisit the notes and flashcards for the weak lectures.'}</div>
+      ${s.mode === 'exam' ? `<div class="small muted" style="margin-top:8px">${paperScore !== null ? `<b>Paper score: ${paperScore}%</b> (every question weighs the same, as on the real exam). ` : ''}This is a practice result, not a grade prediction: written parts are graded by you, and ${s.items.length} items is a small sample of what an exam can ask. Look at the per-theme lines and the review below.</div>` : ''}
       ${s.mode === 'exam' && sc.pendingSelf ? `<div class="warn-box small">${sc.pendingSelf} written answer(s) are waiting for your self-grade below.</div>` : ''}
       <div class="small muted" style="margin-top:8px">${Object.entries(bylec).map(([k, v]) => `${esc(k.slice(0, 38))}: <b>${v.ok}/${v.n}</b>`).join(' · ')}</div></div></div>
       <div class="row" style="margin-top:16px">${planContinueButton(s)}<button class="btn ${isPlanExercise(s) ? '' : 'primary'}" data-action="retry-missed" ${missed.length ? '' : 'disabled'}>Retry ${missed.length} missed</button><a class="btn" href="${esc(s.back)}">Done</a></div></div>
@@ -3398,7 +3544,7 @@ function saveSession() {
       const q0 = it.q, gen = q0.gen ? Object.assign({}, q0, { lec: undefined }) : null;
       const base = q0.gen ? q0.id : q0.id, qo = q0.options || [];
       const enc = r => r && typeof r === 'object' && !Array.isArray(r) ? { opt: qo.indexOf(r) } : Array.isArray(r) ? { opts: r.map(x => qo.indexOf(x)) } : r;
-      return { id: base, gen, opts: it.opts ? it.opts.map(x => qo.indexOf(x)) : null, resp: enc(it.resp), ok: it.ok, revealed: it.revealed, mismatch: it.mismatch, rub: it.rub, codeOut: it.codeOut };
+      return { id: base, gen, opts: it.opts ? it.opts.map(x => qo.indexOf(x)) : null, resp: enc(it.resp), ok: it.ok, revealed: it.revealed, mismatch: it.mismatch, rub: it.rub, codeOut: it.codeOut, theme: it.theme, no: it.no, part: it.part, parts: it.parts, simDone: it.simDone };
     }) });
     localStorage.setItem(LS_SESSION, JSON.stringify(o));
   } catch (e) { /* storage full or blocked: the session simply will not survive a reload */ }
@@ -3419,7 +3565,7 @@ function restoreSession() {
       let q = q0;
       if (it.gen) { q = Object.assign({}, it.gen, { lec: q0.lec }); }
       const qo = q.options || [], dec = r => r && r.opt !== undefined ? qo[r.opt] : r && r.opts ? r.opts.map(i => qo[i]) : r;
-      items.push({ q, opts: it.opts ? it.opts.map(i => qo[i]) : null, resp: dec(it.resp), ok: it.ok, revealed: it.revealed, mismatch: it.mismatch, rub: it.rub, codeOut: it.codeOut });
+      items.push({ q, opts: it.opts ? it.opts.map(i => qo[i]) : null, resp: dec(it.resp), ok: it.ok, revealed: it.revealed, mismatch: it.mismatch, rub: it.rub, codeOut: it.codeOut, theme: it.theme, no: it.no, part: it.part, parts: it.parts, simDone: it.simDone });
     }
     session = Object.assign({}, o, { items }); return true;
   } catch (e) { return false; }
@@ -3542,10 +3688,17 @@ function handleClick(ev) {
     case 'quiz-lec': { const l = L(); startQuiz(quizRound(l), l.title, location.hash); break; }
     case 'quiz-lec-all': { const l = L(); startQuiz(l.questions, l.title + ' - all questions', location.hash); break; }
     case 'quiz-lec-missed': { const l = L(); const w = weakQs([l]); w.length ? startQuiz(w, l.title + ' - missed', location.hash) : toast('No missed questions here yet'); break; }
-    case 'quiz-course': { const C = getCourse(d.id); startQuiz(shuffle(C.lectures.flatMap(l => l.questions)).slice(0, 25), C.name, location.hash); break; }
+    case 'quiz-course': { const C = getCourse(d.id); startQuiz(courseMix(C, 25), C.name + ' · mixed round', location.hash); break; }
     case 'review-q': { const lecs_ = d.id === 'all' ? allLectures() : getCourse(d.id).lectures; const pool = dueQs(lecs_); const weak = weakQs(lecs_); const seen = new Set(); const pick = []; shuffle(weak).concat(shuffle(pool)).forEach(q => { if (!seen.has(q.id) && pick.length < 20) { seen.add(q.id); pick.push(q); } }); pick.length ? startQuiz(pick, 'Smart review', location.hash) : toast('Nothing is due - great work'); break; }
     case 'quiz-weak': startQuiz(shuffle(weakQs(allLectures())), 'Weak spots', '#/weak'); break;
     case 'start-exam': pickExam(); break;
+    case 'similar': {
+      const s = session; if (!s || s.kind !== 'quiz') break;
+      const it = s.items[s.i], nq = similarQuestion(it.q, s);
+      if (!nq) { toast('No other question on this idea yet - try the notes section above'); break; }
+      it.simDone = true; s.items.splice(s.i + 1, 0, mkItem(nq)); saveSession(); render();
+      toast(nq.type === 'gen' ? 'A new variant of this problem is next' : 'A related question is next'); break; }
+    case 'start-paper': startPaper(d.id, +d.n || 7); break;
     case 'mid-edit': midEdit = !midEdit; viewCourse(parseRoute()); break;
     case 'mid-toggle': { const C = getCourse(d.c), cur = new Set((P.mid || {})[C.id] || []); el.checked ? cur.add(d.s) : cur.delete(d.s); P.mid = P.mid || {}; P.mid[C.id] = C.lectures.map(l => l.slug).filter(x => cur.has(x)); P.midT = P.midT || {}; P.midT[C.id] = Date.now(); saveP(); break; }
     case 'mid-clear': if (confirm('Clear the midterm selection for this course?')) { P.mid[d.id] = []; P.midT = P.midT || {}; P.midT[d.id] = Date.now(); saveP(); midEdit = false; viewCourse(parseRoute()); } break;

@@ -22,6 +22,7 @@ DATA_DIR = os.environ.get("STUDYHUB_DATA") or (os.path.join(ICLOUD, "StudyHub") 
 SYNC_FILE = os.path.join(DATA_DIR, "studyhub-sync.json")
 BACKUPS = os.path.join(DATA_DIR, "backups")
 KEEP = 300
+MAX_BODY = 20 * 1024 * 1024   # a sync body is a few hundred KB; refuse anything absurd
 
 
 def load():
@@ -61,9 +62,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def _local_host(self):
+        """The sync endpoint answers only to localhost names, so a web page cannot reach it through DNS rebinding."""
+        return (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]") in ("localhost", "127.0.0.1", "::1", "")
+
     def do_GET(self):
         if self.path.split("?")[0] != "/studyhub-sync":
             return super().do_GET()
+        if not self._local_host():
+            return self.send_error(403)
         body = load().encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -74,13 +81,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_PUT(self):
         if self.path.split("?")[0] != "/studyhub-sync":
             return self.send_error(405)
-        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8")
+        if not self._local_host():
+            return self.send_error(403)
         try:
-            data = json.loads(raw)
-            assert isinstance(data, dict) and "progress" in data
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self.send_error(400, "bad Content-Length")
+        if n <= 0 or n > MAX_BODY:
+            return self.send_error(413 if n > MAX_BODY else 400, "sync body missing or too large")
+        try:
+            data = json.loads(self.rfile.read(n).decode("utf-8"))
+            assert isinstance(data, dict) and isinstance(data.get("progress"), dict)
         except Exception:
             return self.send_error(400, "not a StudyHub sync body")
-        save(json.dumps(data, ensure_ascii=False))
+        try:
+            save(json.dumps(data, ensure_ascii=False))
+        except OSError as e:               # disk full, iCloud folder not writable ...
+            sys.stderr.write(f"could not save progress: {e}\n")
+            return self.send_error(500, "could not save progress")
         self.send_response(204)
         self.end_headers()
 
