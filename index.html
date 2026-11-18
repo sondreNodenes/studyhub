@@ -2564,12 +2564,12 @@ function sectionMap(L, C) {
    the key points, and the flashcards - instead of the 4-step lecture flow
    =================================================================== */
 // MT = midterm practice sets: worksheets too, but sourced per question (teacher or teacher-style)
-const isAssessment = L => /^(HW|Q|LAB|MT)\d/i.test(L.code || '');
+const isAssessment = L => /^(HW|Q|LAB|MT|EX)\d/i.test(L.code || '');   // EX = a past exam as a worksheet
 function questionSource(q) {
   const L = q.lec;
   if (L && !L.user && isAssessment(L) && !/^MT/i.test(L.code)) return { kind: 'teacher', label: 'Teacher-sourced', detail: `${L.course.name} · ${L.code}` };
   if (L && L.user) return { kind: 'practice', label: 'Your practice', detail: 'Added or replaced by you' };
-  const evidence = /\b(?:style of\s+)?(?:Quiz\s*\d+\s*,?\s*(?:Q(?:uestion)?|M|C)\s*\d+\w*|HW\d+\s*Q\d+\w*|Lab\s*\d+(?:\s*,?\s*Q\d+\w*)?|Lec(?:ture)?\s*\d+\s*,\s*slides?\s*\d+|TA review\s*(?:notebook|\d+\w*)?|Past exam\s+(?:SP|SU|FA)\d{4}\w*(?:,\s*Sample\s*\d+\w*)?)[^.\n]*/i.exec((q.text || '') + '\n' + (q.expl || ''));
+  const evidence = /\b(?:style of\s+)?(?:Quiz\s*\d+\s*,?\s*(?:Q(?:uestion)?|M|C)\s*\d+\w*|HW\d+\s*Q\d+\w*|Lab\s*\d+(?:\s*,?\s*Q\d+\w*)?|Lec(?:ture)?\s*\d+\s*,\s*slides?\s*\d+|TA review\s*(?:notebook|\d+\w*)?|Past exam\s+(?:SP|SU|FA)\d{4}\w*(?:,\s*Sample\s*\d+\w*)?|Exam\s*20\d{2}\w*\s*,?\s*Q\d+\w*|PS\s*\d+\s*,?\s*Q\d+\w*)[^.\n]*/i.exec((q.text || '') + '\n' + (q.expl || ''));
   if (evidence) return /\bstyle\b/i.test(evidence[0])
     ? { kind: 'practice', label: 'Teacher-style practice', detail: evidence[0] }
     : { kind: 'teacher', label: 'Teacher-sourced', detail: evidence[0] };
@@ -2669,7 +2669,7 @@ function viewAssessment(r) {
   }
   main.innerHTML = `${courseCrumbs(r)}
     <div class="row" style="align-items:flex-start"><div style="flex:1;min-width:240px"><span class="pill" style="--c:${esc(C.color)}">${esc(C.name)}${L.code ? ' · ' + esc(L.code) : ''}</span><h1 style="margin:.35em 0 0;font-size:1.65rem">${esc(L.title)}</h1>
-      <div class="muted small">${/^HW/i.test(L.code) ? 'Homework' : /^LAB/i.test(L.code) ? 'Lab' : /^MT/i.test(L.code) ? 'Midterm practice' : 'Quiz'} · ${pluralize(n, 'question')}${graded ? ` · graded <b>${esc(graded)}</b>` : ''} · ${s.qOk}/${n} right last time${cov.length ? ` · covers ${cov.map(x => `<a href="#/c/${esc(C.id)}/${esc(x.slug)}" title="${esc(x.title)}">${esc(x.code)}</a>`).join(', ')}` : ''}</div></div>
+      <div class="muted small">${/^HW/i.test(L.code) ? 'Homework' : /^LAB/i.test(L.code) ? 'Lab' : /^MT/i.test(L.code) ? 'Midterm practice' : /^EX/i.test(L.code) ? 'Past exam' : 'Quiz'} · ${pluralize(n, 'question')}${graded ? ` · graded <b>${esc(graded)}</b>` : ''} · ${s.qOk}/${n} right last time${cov.length ? ` · covers ${cov.map(x => `<a href="#/c/${esc(C.id)}/${esc(x.slug)}" title="${esc(x.title)}">${esc(x.code)}</a>`).join(', ')}` : ''}</div></div>
       <div class="row">${exportMenu(L.id)}<button class="btn ghost" data-action="notes-md" ${id} title="Download the raw file">⬇ .md</button></div></div>
     ${L.warnings.length ? `<div class="warn-box small">${L.warnings.map(esc).join('<br>')}</div>` : ''}
     <div class="tabs" style="margin:14px 0 14px">${tabs.map(([k, t]) => `<a class="tab ${tab === k ? 'active' : ''}" href="${base}/${k}">${t}</a>`).join('')}</div>
