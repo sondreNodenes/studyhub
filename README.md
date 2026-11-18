@@ -4,11 +4,11 @@
 
 **A local-first study app for exams: notes, flashcards, spaced repetition, exam-style quizzes and an exam plan that tells you what to learn next.**
 
-![Python](https://img.shields.io/badge/python-3.8%2B-3776AB?logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/python-3--3776AB?logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![Frontend](https://img.shields.io/badge/frontend-single%20HTML%20file-orange)
 ![Runs](https://img.shields.io/badge/runs-100%25%20local-blue)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
+![Platform](https://img.shields.io/badge/tested%20on-macOS-lightgrey)
 ![Mobile](https://img.shields.io/badge/mobile-responsive-9cf)
 
 <img src="docs/dashboard.png" alt="StudyHub dashboard" width="860">
