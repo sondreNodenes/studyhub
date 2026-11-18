@@ -94,6 +94,9 @@ def build():
                             payload = typeset_svg(payload.decode("utf-8")).encode("utf-8")
                         imgs["img/" + fn] = "data:" + mt + ";base64," + base64.b64encode(payload).decode()
             entry["images"] = imgs
+        ov = os.path.join(cdir, "overview.html")      # optional course overview page (mindmap), shown at #/c/<id>/overview
+        if os.path.exists(ov):
+            entry["overview"] = read(ov)
         sp = os.path.join(cdir, "setup.py")
         if os.path.exists(sp):
             entry["setup"] = read(sp)

@@ -1422,7 +1422,7 @@ function buildCourses() {
   const out = [];
   (window.STUDYHUB_DATA || []).forEach(d => {
     const meta = parseCourseMeta(d.course, d.dir);
-    const c = Object.assign(meta, { lectures: [], builtin: true, setup: d.setup || '', images: d.images || {} });
+    const c = Object.assign(meta, { overview: d.overview || '', lectures: [], builtin: true, setup: d.setup || '', images: d.images || {} });
     d.lectures.forEach(f => { const L = makeLecture(c, f.raw, f.file.replace(/\.md$/, ''), false); L.slides = f.slides || null; c.lectures.push(L); });
     out.push(c);
   });
@@ -1790,6 +1790,7 @@ function parseRoute() {
     r.course = getCourse(parts[1]);
     if (!r.course) return { name: 'home', parts: [] };
     r.name = 'course';
+    if (parts[2] === 'overview' && r.course.overview) { r.name = 'overview'; return r; }
     if (parts[2]) { r.lec = r.course.lectures.find(l => l.slug === parts[2]); if (r.lec) { r.name = 'lecture'; r.tab = ({ notes: 'study', cards: 'recall', quiz: 'test' })[parts[3]] || parts[3] || 'highlights'; r.page = +parts[4] || 0; r.sec = /^s/.test(parts[4] || '') ? parts[4].slice(1) : null; } }
     return r;
   }
@@ -1805,7 +1806,7 @@ function render() {
   document.body.classList.remove('nav-open');
   window.scrollTo({ top: 0, behavior: 'instant' });
   docLeave();
-  const views = { docs: viewDocs, grades: viewGrades, home: viewHome, session: viewStudySession, course: viewCourse, lecture: viewLecture, weak: viewWeak, exam: viewExamSetup, manage: viewManage, play: viewPlay, search: viewSearch };
+  const views = { overview: viewOverview, docs: viewDocs, grades: viewGrades, home: viewHome, session: viewStudySession, course: viewCourse, lecture: viewLecture, weak: viewWeak, exam: viewExamSetup, manage: viewManage, play: viewPlay, search: viewSearch };
   document.title = 'StudyHub' + (r.lec ? ' · ' + r.lec.title : r.course ? ' · ' + r.course.name : '');
   const sameLecture = r.name === 'lecture' && lastLecId === r.lec.id;
   views[r.name](r);
@@ -2109,6 +2110,12 @@ function courseTaskPanel(C) {
     ${config.tasks.map(([id, label]) => `<label class="opt" style="cursor:pointer"><input type="checkbox" data-change="milestone" data-id="${esc(C.id + '/' + id)}" ${(P.milestones || {})[C.id + '/' + id]?.done ? 'checked' : ''}><span>${esc(label)}</span></label>`).join('')}
     <div class="row" style="margin-top:12px">${projectLecture ? `<a class="btn sm" href="#/c/${esc(C.id)}/${esc(projectLecture.slug)}/study">Project guidance</a>` : ''}<a class="btn sm" href="#/docs/${esc(C.id)}">Course documents</a><a class="btn sm" href="#/grades">Assessment requirements &amp; grades</a></div></div>`;
 }
+function viewOverview(r) {
+  const C = r.course;
+  main.classList.add('wide');
+  main.innerHTML = `<div class="crumbs"><a href="#/">Dashboard</a> › <a href="#/c/${esc(C.id)}">${esc(C.name)}</a> › Overview</div>
+    <div class="row" style="margin:6px 0 14px"><h1 style="margin:0">Course overview</h1><span class="spacer"></span><a class="btn primary" href="#/c/${esc(C.id)}">Back to the course</a></div>${C.overview}`;
+}
 function viewCourse(r) {
   const C = r.course, lecs = C.lectures;
   const mset = midSet(C), ml = midLecs(C);
@@ -2118,6 +2125,7 @@ function viewCourse(r) {
     <button class="btn ${mset || midEdit ? '' : 'primary'}" data-action="mid-edit">${midEdit ? 'Done' : mset ? 'Edit midterm lectures' : 'Choose midterm lectures'}</button>${mset && !midEdit ? '<button class="btn ghost" data-action="mid-clear" data-id="' + esc(C.id) + '">Clear</button>' : ''}</div></div>`;
   main.innerHTML = `${courseCrumbs(r)}
     <div class="hero" style="--c:${esc(C.color)}"><div><h1>${esc(C.name)}</h1><div class="muted">${esc(C.tagline)}</div></div></div>
+    ${C.overview ? `<a class="card" href="#/c/${esc(C.id)}/overview" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;margin-bottom:16px;text-decoration:none"><div style="flex:1 1 240px"><b>Course overview</b><div class="small muted">A one-page mindmap of all themes, modules and key concepts, with how often each was asked in past exams.</div></div><span class="btn primary">Open the mindmap</span></a>` : ''}
     <div class="row" style="margin-bottom:18px">
       <button class="btn primary" data-action="study-due" data-id="c:${esc(C.id)}">Review flashcards (${batchLabel(dueCards(lecs).length || lecs.reduce((n, l) => n + l.cards.length, 0))})</button>
       <button class="btn" data-action="review-q" data-id="${esc(C.id)}">Smart review (due + weak)</button>
